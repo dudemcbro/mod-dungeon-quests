@@ -17,13 +17,14 @@ using namespace Acore::ChatCommands;
 
 namespace
 {
-    // mapId -> quest IDs whose givers are in that dungeon/raid
     std::unordered_map<uint32, std::vector<uint32>> _dungeonQuestMap;
 
     struct PlayerState
     {
         uint32 lastInstanceId = 0;
-        std::vector<uint32> available; // quest IDs the player can currently accept
+        bool   isDungeon      = false; // true = dungeon, false = raid
+        std::vector<uint32> available; // quests player can accept directly
+        std::vector<uint32> locked;    // quests blocked by missing prereqs (dungeon only)
     };
 
     std::unordered_map<ObjectGuid, PlayerState> _playerState;
@@ -62,35 +63,55 @@ namespace
             "INNER JOIN instance_template it ON it.map = go.map"));
     }
 
-    // Returns the earliest unmet prerequisite quest ID in the chain, or 0.
-    // Depth-capped at 32 to guard against bad DB data.
-    uint32 FirstMissingPrereq(Player* player, Quest const* quest)
+    // Returns all missing prereq IDs in chain order (earliest first), capped at 32.
+    std::vector<uint32> GetMissingPrereqs(Player* player, Quest const* quest)
     {
-        uint32 missing = 0;
-        int32 prevId   = quest->GetPrevQuestId();
-        int depth      = 0;
+        std::vector<uint32> chain;
+        int32 prevId = quest->GetPrevQuestId();
+        int depth    = 0;
 
         while (prevId > 0 && depth++ < 32)
         {
             uint32 pid = static_cast<uint32>(prevId);
-            if (!player->GetQuestRewardStatus(pid))
-                missing = pid;
+            chain.push_back(pid);
             Quest const* prev = sObjectMgr->GetQuestTemplate(pid);
             if (!prev)
                 break;
             prevId = prev->GetPrevQuestId();
         }
+
+        std::reverse(chain.begin(), chain.end()); // earliest prereq first
+
+        std::vector<uint32> missing;
+        for (uint32 qid : chain)
+            if (!player->GetQuestRewardStatus(qid))
+                missing.push_back(qid);
+
         return missing;
     }
 
     void PrintQuestList(ChatHandler& ch, PlayerState const& state)
     {
-        ch.SendSysMessage("|cffFFFF00[Dungeon Quests]|r Type |cffFFD700.dq <number>|r to accept:");
-        for (size_t i = 0; i < state.available.size(); ++i)
+        if (!state.available.empty())
         {
-            Quest const* q = sObjectMgr->GetQuestTemplate(state.available[i]);
-            if (q)
-                ch.PSendSysMessage("  |cffFFD700%zu.|r %s", i + 1, q->GetTitle().c_str());
+            ch.SendSysMessage("|cffFFFF00[Dungeon Quests]|r Type |cffFFD700.dq <number>|r to accept:");
+            for (size_t i = 0; i < state.available.size(); ++i)
+            {
+                Quest const* q = sObjectMgr->GetQuestTemplate(state.available[i]);
+                if (q)
+                    ch.PSendSysMessage("  |cffFFD700%zu.|r %s", i + 1, q->GetTitle().c_str());
+            }
+        }
+
+        if (!state.locked.empty() && state.isDungeon)
+        {
+            ch.SendSysMessage("|cffFFFF00[Dungeon Quests]|r Type |cffFFD700.dq prereq <number>|r to auto-complete requirements:");
+            for (size_t i = 0; i < state.locked.size(); ++i)
+            {
+                Quest const* q = sObjectMgr->GetQuestTemplate(state.locked[i]);
+                if (q)
+                    ch.PSendSysMessage("  |cffAAAAAA%zu.|r %s", i + 1, q->GetTitle().c_str());
+            }
         }
     }
 
@@ -100,19 +121,19 @@ namespace
         ObjectGuid guid   = player->GetGUID();
         auto& state       = _playerState[guid];
 
-        // Only notify once per unique instance to avoid re-entry spam
         if (instanceId != 0 && state.lastInstanceId == instanceId)
             return;
 
         state.lastInstanceId = instanceId;
+        state.isDungeon      = !map->IsRaid();
         state.available.clear();
+        state.locked.clear();
 
         auto mapIt = _dungeonQuestMap.find(map->GetId());
         if (mapIt == _dungeonQuestMap.end())
             return;
 
         ChatHandler ch(player->GetSession());
-        bool anyLocked = false;
 
         for (uint32 questId : mapIt->second)
         {
@@ -124,16 +145,24 @@ namespace
                 player->GetQuestRewardStatus(questId))
                 continue;
 
-            uint32 missing = FirstMissingPrereq(player, quest);
-            if (missing)
+            std::vector<uint32> missing = GetMissingPrereqs(player, quest);
+            if (!missing.empty())
             {
-                Quest const* mq    = sObjectMgr->GetQuestTemplate(missing);
-                std::string mname  = mq ? mq->GetTitle() : std::to_string(missing);
-                ch.PSendSysMessage(
-                    "|cffFFFF00[Dungeon Quests]|r \"|cffAAAAAA%s|r\" requires "
-                    "\"|cffFFD700%s|r\" first.",
-                    quest->GetTitle().c_str(), mname.c_str());
-                anyLocked = true;
+                if (state.isDungeon)
+                {
+                    // Offer auto-complete for dungeons
+                    state.locked.push_back(questId);
+                }
+                else
+                {
+                    // Raids: inform only, no skip option
+                    Quest const* mq   = sObjectMgr->GetQuestTemplate(missing.front());
+                    std::string mname = mq ? mq->GetTitle() : std::to_string(missing.front());
+                    ch.PSendSysMessage(
+                        "|cffFFFF00[Dungeon Quests]|r \"|cffAAAAAA%s|r\" requires "
+                        "\"|cffFFD700%s|r\" first.",
+                        quest->GetTitle().c_str(), mname.c_str());
+                }
                 continue;
             }
 
@@ -143,10 +172,75 @@ namespace
             state.available.push_back(questId);
         }
 
-        if (!state.available.empty())
+        if (!state.available.empty() || !state.locked.empty())
             PrintQuestList(ch, state);
-        else if (!anyLocked)
-            return; // nothing to say, stay silent
+    }
+
+    // Complete all missing prereqs in order then accept the target quest.
+    // Returns false and sends an error if anything blocks completion.
+    bool CompletePrereqsAndAccept(ChatHandler* handler, Player* player, uint32 questId)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
+        {
+            handler->SendSysMessage("|cffFF4444[Dungeon Quests]|r Quest no longer valid.");
+            return false;
+        }
+
+        std::vector<uint32> missing = GetMissingPrereqs(player, quest);
+
+        // Need one free log slot; RewardQuest frees it after each step
+        if (player->FindQuestSlot(0) >= MAX_QUEST_LOG_SIZE)
+        {
+            handler->SendSysMessage("|cffFF4444[Dungeon Quests]|r Quest log is full.");
+            return false;
+        }
+
+        for (uint32 prereqId : missing)
+        {
+            Quest const* prereq = sObjectMgr->GetQuestTemplate(prereqId);
+            if (!prereq)
+                continue;
+
+            if (player->GetQuestStatus(prereqId) == QUEST_STATUS_NONE)
+                player->AddQuest(prereq, nullptr);
+
+            player->CompleteQuest(prereqId);
+            player->RewardQuest(prereq, 0, nullptr, false);
+
+            handler->PSendSysMessage(
+                "|cff44FF44[Dungeon Quests]|r Completed prerequisite: \"%s\".",
+                prereq->GetTitle().c_str());
+        }
+
+        // Now accept the actual dungeon quest
+        if (player->GetQuestStatus(questId) != QUEST_STATUS_NONE ||
+            player->GetQuestRewardStatus(questId))
+        {
+            handler->PSendSysMessage(
+                "|cffFFFF00[Dungeon Quests]|r \"%s\" is already in your log.",
+                quest->GetTitle().c_str());
+            return true;
+        }
+
+        if (!player->CanTakeQuest(quest, false))
+        {
+            handler->PSendSysMessage(
+                "|cffFF4444[Dungeon Quests]|r Cannot accept \"%s\" after completing prerequisites.",
+                quest->GetTitle().c_str());
+            return false;
+        }
+
+        if (player->FindQuestSlot(0) >= MAX_QUEST_LOG_SIZE)
+        {
+            handler->SendSysMessage("|cffFF4444[Dungeon Quests]|r Quest log is full.");
+            return false;
+        }
+
+        player->AddQuest(quest, nullptr);
+        handler->PSendSysMessage(
+            "|cff44FF44[Dungeon Quests]|r Accepted: \"%s\".", quest->GetTitle().c_str());
+        return true;
     }
 }
 
@@ -200,6 +294,7 @@ public:
         while (!arg.empty() && arg.front() == ' ') arg.remove_prefix(1);
         while (!arg.empty() && arg.back()  == ' ') arg.remove_suffix(1);
 
+        // .dq off
         if (arg == "off")
         {
             _optedOut.insert(guid);
@@ -208,6 +303,7 @@ public:
             return true;
         }
 
+        // .dq on
         if (arg == "on")
         {
             _optedOut.erase(guid);
@@ -215,10 +311,12 @@ public:
             return true;
         }
 
+        // .dq (no args) -- reprint list
         if (arg.empty())
         {
             auto it = _playerState.find(guid);
-            if (it == _playerState.end() || it->second.available.empty())
+            if (it == _playerState.end() ||
+                (it->second.available.empty() && it->second.locked.empty()))
             {
                 handler->SendSysMessage(
                     "|cffFFFF00[Dungeon Quests]|r No quests queued. Enter a dungeon first.");
@@ -228,13 +326,59 @@ public:
             return true;
         }
 
-        // Parse numeric index
+        // .dq prereq <n>
+        if (arg.size() > 7 && arg.substr(0, 7) == "prereq ")
+        {
+            std::string_view rest = arg.substr(7);
+            while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+
+            char* end;
+            long idx = std::strtol(std::string(rest).c_str(), &end, 10);
+            if (*end != '\0' || idx < 1)
+            {
+                handler->SendSysMessage(
+                    "|cffFF4444[Dungeon Quests]|r Usage: .dq prereq <number>");
+                return true;
+            }
+
+            auto it = _playerState.find(guid);
+            if (it == _playerState.end() || it->second.locked.empty())
+            {
+                handler->SendSysMessage(
+                    "|cffFFFF00[Dungeon Quests]|r No locked quests queued.");
+                return true;
+            }
+
+            if (!it->second.isDungeon)
+            {
+                handler->SendSysMessage(
+                    "|cffFF4444[Dungeon Quests]|r Prerequisite auto-complete is only available in dungeons, not raids.");
+                return true;
+            }
+
+            auto& locked = it->second.locked;
+            size_t index = static_cast<size_t>(idx) - 1;
+            if (index >= locked.size())
+            {
+                handler->PSendSysMessage(
+                    "|cffFF4444[Dungeon Quests]|r Pick a number between 1 and %zu.", locked.size());
+                return true;
+            }
+
+            uint32 questId = locked[index];
+            if (CompletePrereqsAndAccept(handler, player, questId))
+                locked.erase(locked.begin() + index);
+
+            return true;
+        }
+
+        // .dq <n> -- accept available quest
         char* end;
         long idx = std::strtol(std::string(arg).c_str(), &end, 10);
         if (*end != '\0' || idx < 1)
         {
             handler->SendSysMessage(
-                "|cffFF4444[Dungeon Quests]|r Usage: .dq [number | on | off]");
+                "|cffFF4444[Dungeon Quests]|r Usage: .dq [number | prereq <number> | on | off]");
             return true;
         }
 
@@ -258,6 +402,7 @@ public:
 
         uint32 questId    = available[index];
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+
         if (!quest)
         {
             handler->SendSysMessage("|cffFF4444[Dungeon Quests]|r Quest no longer valid.");
