@@ -348,9 +348,11 @@ namespace
                     // Only offer prereq auto-complete if the player meets all
                     // non-prereq requirements (level, race, class). No point
                     // completing a chain for a quest they can never take.
-                    if (player->SatisfyQuestLevel(quest, false) &&
-                        player->SatisfyQuestRace(quest, false)  &&
-                        player->SatisfyQuestClass(quest, false))
+                    if (player->SatisfyQuestLevel(quest, false)      &&
+                        player->SatisfyQuestRace(quest, false)       &&
+                        player->SatisfyQuestClass(quest, false)      &&
+                        player->SatisfyQuestReputation(quest, false) &&
+                        player->SatisfyQuestSkill(quest, false))
                         state.locked.push_back(questId);
                 }
                 else
