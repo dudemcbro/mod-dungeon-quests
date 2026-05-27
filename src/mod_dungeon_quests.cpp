@@ -136,10 +136,17 @@ namespace
     {
         uint32 prereqId = prereq->GetQuestId();
 
+        // Snapshot SrcItemId count before AddQuest so we can destroy the
+        // delta afterwards (AddQuest hands the source item to the player
+        // but RewardQuest does not clean it up).
+        uint32 srcItemId     = prereq->GetSrcItemId();
+        uint32 srcItemCount  = prereq->GetSrcItemCount();
+        uint32 srcItemBefore = srcItemId ? player->GetItemCount(srcItemId) : 0;
+
         if (player->GetQuestStatus(prereqId) == QUEST_STATUS_NONE)
             player->AddQuest(prereq, nullptr);
 
-        // Fix #2: find which choice item slot is needed downstream (if any) and
+        // Fix #2 (original): find which choice item slot is needed downstream (if any) and
         // pass that index to RewardQuest so we give the correct item.
         uint32 choiceRewardIdx = 0;
         for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
@@ -192,6 +199,14 @@ namespace
             uint32 countAfter = player->GetItemCount(choiceId);
             if (countAfter > choiceBefore)
                 player->DestroyItemCount(choiceId, countAfter - choiceBefore, true);
+        }
+
+        // Destroy SrcItemId delta (source item given by AddQuest, not needed after reward).
+        if (srcItemId && srcItemCount)
+        {
+            uint32 srcAfter = player->GetItemCount(srcItemId);
+            if (srcAfter > srcItemBefore)
+                player->DestroyItemCount(srcItemId, srcAfter - srcItemBefore, true);
         }
 
         ch->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Completed prerequisite: \"|cffFFD700%s|r\".",
@@ -330,7 +345,13 @@ namespace
             {
                 if (state.isDungeon)
                 {
-                    state.locked.push_back(questId);
+                    // Only offer prereq auto-complete if the player meets all
+                    // non-prereq requirements (level, race, class). No point
+                    // completing a chain for a quest they can never take.
+                    if (player->SatisfyQuestLevel(quest, false) &&
+                        player->SatisfyQuestRace(quest, false)  &&
+                        player->SatisfyQuestClass(quest, false))
+                        state.locked.push_back(questId);
                 }
                 else
                 {
@@ -580,6 +601,7 @@ class DungeonQuestsWorld : public WorldScript
 public:
     DungeonQuestsWorld() : WorldScript("DungeonQuestsWorld") {}
     void OnStartup() override { BuildCache(); }
+    void OnAfterConfigLoad(bool reload) override { if (reload) BuildCache(); }
 };
 
 void Addmod_dungeon_questsScripts()
