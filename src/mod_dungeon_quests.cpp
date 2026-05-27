@@ -121,6 +121,15 @@ namespace
     // Silent prereq completion (no XP / gold / rep / unneeded items)
     // -----------------------------------------------------------------------
 
+        // RAII guard: sets the silent flag on construction, clears it on
+    // destruction even if RewardQuest exits early or throws.
+    struct SilentGuard
+    {
+        ObjectGuid guid;
+        explicit SilentGuard(ObjectGuid g) : guid(g) { _silentReward.insert(guid); }
+        ~SilentGuard()                                { _silentReward.erase(guid);  }
+    };
+
     void SilentCompletePrereq(Player* player, Quest const* prereq,
                                std::unordered_set<uint32> const& neededItems,
                                ChatHandler* ch)
@@ -132,24 +141,53 @@ namespace
 
         player->CompleteQuest(prereqId);
 
-        // Suppress XP, gold, reputation via PlayerScript hooks during RewardQuest.
-        _silentReward.insert(player->GetGUID());
-        // Pass player as questGiver to avoid null-deref on spell/mail reward paths.
-        player->RewardQuest(prereq, 0, player, false);
-        _silentReward.erase(player->GetGUID());
+        // Fix #2: find which choice item slot is needed downstream (if any) and
+        // pass that index to RewardQuest so we give the correct item.
+        uint32 choiceRewardIdx = 0;
+        for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
+        {
+            if (prereq->RewardChoiceItemId[i] && neededItems.count(prereq->RewardChoiceItemId[i]))
+            {
+                choiceRewardIdx = i;
+                break;
+            }
+        }
 
-        // Remove any reward items not needed by downstream quests.
+        // Fix #1: snapshot item counts BEFORE RewardQuest so we destroy only
+        // the newly added copies, not items the player already owned.
+        struct ItemSnap { uint32 itemId; uint32 countBefore; };
+        std::vector<ItemSnap> snapshots;
         for (uint32 i = 0; i < QUEST_REWARDS_COUNT; ++i)
         {
             uint32 itemId = prereq->RewardItemId[i];
             if (!itemId || neededItems.count(itemId))
                 continue;
-            player->DestroyItemCount(itemId, prereq->RewardItemIdCount[i], true);
+            snapshots.push_back({ itemId, player->GetItemCount(itemId) });
         }
-        // Choice item: RewardQuest with reward=0 picks index 0.
-        uint32 choiceId = prereq->RewardChoiceItemId[0];
-        if (choiceId && !neededItems.count(choiceId))
-            player->DestroyItemCount(choiceId, prereq->RewardChoiceItemCount[0], true);
+        uint32 choiceId      = prereq->RewardChoiceItemId[choiceRewardIdx];
+        bool   destroyChoice = choiceId && !neededItems.count(choiceId);
+        uint32 choiceBefore  = destroyChoice ? player->GetItemCount(choiceId) : 0;
+
+        // Fix #3: RAII guard so the silent flag is always cleared even if
+        // RewardQuest returns early or throws.
+        {
+            SilentGuard guard(player->GetGUID());
+            player->RewardQuest(prereq, choiceRewardIdx, player, false);
+        }
+
+        // Destroy only the delta (items added by RewardQuest, not pre-existing).
+        for (auto const& snap : snapshots)
+        {
+            uint32 countAfter = player->GetItemCount(snap.itemId);
+            if (countAfter > snap.countBefore)
+                player->DestroyItemCount(snap.itemId, countAfter - snap.countBefore, true);
+        }
+        if (destroyChoice)
+        {
+            uint32 countAfter = player->GetItemCount(choiceId);
+            if (countAfter > choiceBefore)
+                player->DestroyItemCount(choiceId, countAfter - choiceBefore, true);
+        }
 
         ch->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Completed prerequisite: \"|cffFFD700%s|r\".",
             prereq->GetTitle().c_str());
