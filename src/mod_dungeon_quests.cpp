@@ -139,8 +139,6 @@ namespace
         if (player->GetQuestStatus(prereqId) == QUEST_STATUS_NONE)
             player->AddQuest(prereq, nullptr);
 
-        player->CompleteQuest(prereqId);
-
         // Fix #2: find which choice item slot is needed downstream (if any) and
         // pass that index to RewardQuest so we give the correct item.
         uint32 choiceRewardIdx = 0;
@@ -168,11 +166,18 @@ namespace
         bool   destroyChoice = choiceId && !neededItems.count(choiceId);
         uint32 choiceBefore  = destroyChoice ? player->GetItemCount(choiceId) : 0;
 
-        // Fix #3: RAII guard so the silent flag is always cleared even if
-        // RewardQuest returns early or throws.
+        // Fix #2 + #3: SilentGuard now wraps CompleteQuest so that tracking
+        // quests (QUEST_FLAGS_TRACKING), which self-reward inside CompleteQuest,
+        // are suppressed too. After CompleteQuest the quest may already be
+        // rewarded (tracking case), so we skip the explicit RewardQuest to
+        // prevent a double-reward. SetHasDelayedTeleport(false) cancels any
+        // teleport spell reward before it fires in Player::Update.
         {
             SilentGuard guard(player->GetGUID());
-            player->RewardQuest(prereq, choiceRewardIdx, player, false);
+            player->CompleteQuest(prereqId);
+            if (!player->GetQuestRewardStatus(prereqId))
+                player->RewardQuest(prereq, choiceRewardIdx, player, false);
+            player->SetHasDelayedTeleport(false);
         }
 
         // Destroy only the delta (items added by RewardQuest, not pre-existing).
@@ -229,8 +234,9 @@ namespace
         }
 
         // Accept the dungeon quest itself.
-        if (player->GetQuestStatus(questId) != QUEST_STATUS_NONE ||
-            player->GetQuestRewardStatus(questId))
+        if ([&]{ auto s = player->GetQuestStatus(questId);
+                 return s == QUEST_STATUS_INCOMPLETE || s == QUEST_STATUS_COMPLETE
+                     || player->GetQuestRewardStatus(questId); }())
         {
             handler->PSendSysMessage("|cffFFFF00[Dungeon Quests]|r \"%s\" is already in your log.",
                 quest->GetTitle().c_str());
@@ -312,8 +318,11 @@ namespace
             if (!quest)
                 continue;
 
-            if (player->GetQuestStatus(questId) != QUEST_STATUS_NONE ||
-                player->GetQuestRewardStatus(questId))
+            // Allow QUEST_STATUS_FAILED through so players can re-accept
+            // dungeon quests they failed (e.g. timed quests).
+            if ([&]{ auto s = player->GetQuestStatus(questId);
+                     return s == QUEST_STATUS_INCOMPLETE || s == QUEST_STATUS_COMPLETE
+                         || player->GetQuestRewardStatus(questId); }())
                 continue;
 
             std::vector<uint32> missing = GetMissingPrereqs(player, quest);
@@ -531,8 +540,9 @@ public:
             return true;
         }
 
-        if (player->GetQuestStatus(questId) != QUEST_STATUS_NONE ||
-            player->GetQuestRewardStatus(questId))
+        if ([&]{ auto s = player->GetQuestStatus(questId);
+                 return s == QUEST_STATUS_INCOMPLETE || s == QUEST_STATUS_COMPLETE
+                     || player->GetQuestRewardStatus(questId); }())
         {
             handler->PSendSysMessage(
                 "|cffFFFF00[Dungeon Quests]|r \"%s\" is already in your log.",
