@@ -60,7 +60,7 @@ namespace
         process(WorldDatabase.Query(
             "SELECT DISTINCT c.map, cqs.quest "
             "FROM creature c "
-            "INNER JOIN creature_queststarter cqs ON cqs.id = c.id "
+            "INNER JOIN creature_queststarter cqs ON cqs.id = c.id1 "
             "INNER JOIN instance_template it ON it.map = c.map"));
 
         process(WorldDatabase.Query(
@@ -184,7 +184,6 @@ namespace
             player->CompleteQuest(prereqId);
             if (!player->GetQuestRewardStatus(prereqId))
                 player->RewardQuest(prereq, choiceRewardIdx, player, false);
-            player->SetHasDelayedTeleport(false);
         }
 
         // Destroy only the delta (items added by RewardQuest, not pre-existing).
