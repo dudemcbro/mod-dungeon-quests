@@ -208,7 +208,7 @@ namespace
                 player->DestroyItemCount(srcItemId, srcAfter - srcItemBefore, true);
         }
 
-        ch->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Completed prerequisite: \"|cffFFD700%s|r\".",
+        ch->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Completed prerequisite: \"|cffFFD700{}|r\".",
             prereq->GetTitle().c_str());
     }
 
@@ -252,7 +252,7 @@ namespace
                  return s == QUEST_STATUS_INCOMPLETE || s == QUEST_STATUS_COMPLETE
                      || player->GetQuestRewardStatus(questId); }())
         {
-            handler->PSendSysMessage("|cffFFFF00[Dungeon Quests]|r \"%s\" is already in your log.",
+            handler->PSendSysMessage("|cffFFFF00[Dungeon Quests]|r \"{}\" is already in your log.",
                 quest->GetTitle().c_str());
             return true;
         }
@@ -260,7 +260,7 @@ namespace
         if (!player->CanTakeQuest(quest, false))
         {
             handler->PSendSysMessage(
-                "|cffFF4444[Dungeon Quests]|r Cannot accept \"%s\" after completing prerequisites.",
+                "|cffFF4444[Dungeon Quests]|r Cannot accept \"{}\" after completing prerequisites.",
                 quest->GetTitle().c_str());
             return false;
         }
@@ -272,7 +272,7 @@ namespace
         }
 
         player->AddQuest(quest, nullptr);
-        handler->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Accepted: \"|cffFFD700%s|r\".",
+        handler->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Accepted: \"|cffFFD700{}|r\".",
             quest->GetTitle().c_str());
         return true;
     }
@@ -290,7 +290,7 @@ namespace
             {
                 Quest const* q = sObjectMgr->GetQuestTemplate(state.available[i]);
                 if (q)
-                    ch.PSendSysMessage("  |cffFFD700%zu.|r %s", i + 1, q->GetTitle().c_str());
+                    ch.PSendSysMessage("  |cffFFD700{}.|r {}", i + 1, q->GetTitle().c_str());
             }
         }
 
@@ -301,7 +301,7 @@ namespace
             {
                 Quest const* q = sObjectMgr->GetQuestTemplate(state.locked[i]);
                 if (q)
-                    ch.PSendSysMessage("  |cffAAAAAA%zu.|r %s", i + 1, q->GetTitle().c_str());
+                    ch.PSendSysMessage("  |cffAAAAAA{}.|r {}", i + 1, q->GetTitle().c_str());
             }
         }
     }
@@ -359,8 +359,8 @@ namespace
                     Quest const* mq   = sObjectMgr->GetQuestTemplate(missing.front());
                     std::string mname = mq ? mq->GetTitle() : std::to_string(missing.front());
                     ch.PSendSysMessage(
-                        "|cffFFFF00[Dungeon Quests]|r \"|cffAAAAAA%s|r\" requires "
-                        "\"|cffFFD700%s|r\" first.",
+                        "|cffFFFF00[Dungeon Quests]|r \"|cffAAAAAA{}|r\" requires "
+                        "\"|cffFFD700{}|r\" first.",
                         quest->GetTitle().c_str(), mname.c_str());
                 }
                 continue;
@@ -513,7 +513,7 @@ public:
             if (index >= locked.size())
             {
                 handler->PSendSysMessage(
-                    "|cffFF4444[Dungeon Quests]|r Pick a number between 1 and %zu.", locked.size());
+                    "|cffFF4444[Dungeon Quests]|r Pick a number between 1 and {}.", locked.size());
                 return true;
             }
 
@@ -548,7 +548,7 @@ public:
         if (index >= available.size())
         {
             handler->PSendSysMessage(
-                "|cffFF4444[Dungeon Quests]|r Pick a number between 1 and %zu.", available.size());
+                "|cffFF4444[Dungeon Quests]|r Pick a number between 1 and {}.", available.size());
             return true;
         }
 
@@ -567,7 +567,7 @@ public:
                      || player->GetQuestRewardStatus(questId); }())
         {
             handler->PSendSysMessage(
-                "|cffFFFF00[Dungeon Quests]|r \"%s\" is already in your log.",
+                "|cffFFFF00[Dungeon Quests]|r \"{}\" is already in your log.",
                 quest->GetTitle().c_str());
             available.erase(available.begin() + index);
             return true;
@@ -576,7 +576,7 @@ public:
         if (!player->CanTakeQuest(quest, false))
         {
             handler->PSendSysMessage(
-                "|cffFF4444[Dungeon Quests]|r Cannot accept \"%s\" right now.",
+                "|cffFF4444[Dungeon Quests]|r Cannot accept \"{}\" right now.",
                 quest->GetTitle().c_str());
             return true;
         }
@@ -588,7 +588,7 @@ public:
         }
 
         player->AddQuest(quest, nullptr);
-        handler->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Accepted: \"|cffFFD700%s|r\".",
+        handler->PSendSysMessage("|cff44FF44[Dungeon Quests]|r Accepted: \"|cffFFD700{}|r\".",
             quest->GetTitle().c_str());
         available.erase(available.begin() + index);
         return true;
