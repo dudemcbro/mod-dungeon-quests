@@ -57,11 +57,14 @@ namespace
             while (result->NextRow());
         };
 
+        // creature.id1 on older cores, creature.id on current AzerothCore
+        std::string const entryColumn = WorldDatabase.Query("SHOW COLUMNS FROM `creature` LIKE 'id1'") ? "id1" : "id";
+
         process(WorldDatabase.Query(
             "SELECT DISTINCT c.map, cqs.quest "
             "FROM creature c "
-            "INNER JOIN creature_queststarter cqs ON cqs.id = c.id1 "
-            "INNER JOIN instance_template it ON it.map = c.map"));
+            "INNER JOIN creature_queststarter cqs ON cqs.id = c.{} "
+            "INNER JOIN instance_template it ON it.map = c.map", entryColumn));
 
         process(WorldDatabase.Query(
             "SELECT DISTINCT go.map, gqs.quest "
